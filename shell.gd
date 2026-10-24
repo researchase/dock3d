@@ -35,6 +35,10 @@ var _covered := false              # a window overlaps the dock (written by thre
 var _hide := 0.0                   # 0 shown .. 1 hidden
 var _hide_hold := 0.0              # seconds to wait before hiding again after the mouse leaves
 
+# while the drawers are open, windows that appear (a picture you opened, an app) come in front
+var _own_id := ""                  # our X11 window id, e.g. 0x5e00006
+var _open_gen := 0                 # bumped each time the drawers open (read by the watcher thread)
+
 
 func _ready() -> void:
 	set_anchors_preset(PRESET_FULL_RECT)
@@ -99,8 +103,8 @@ func _ready() -> void:
 	await get_tree().process_frame
 	if DisplayServer.get_name() == "X11":
 		var wid := DisplayServer.window_get_native_handle(DisplayServer.WINDOW_HANDLE)
-		OS.execute("xprop", ["-id", str(wid), "-f", "_NET_WM_WINDOW_TYPE", "32a",
-			"-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK"])
+		_own_id = "0x%x" % wid
+		_set_window_type("DOCK")
 		DisplayServer.window_set_position(srect.position)
 	if OS.has_environment("DOCK_DROP"):   # tests: pretend these files were dropped on the dock
 		_on_files_dropped(OS.get_environment("DOCK_DROP").split(":"))
@@ -128,10 +132,24 @@ func _exit_tree() -> void:
 		_watch.wait_to_finish()
 
 
+## DOCK while only the dock shows (stays above every window). NORMAL while the drawers are open,
+## so windows opened from them can come in front instead of hiding behind.
+func _set_window_type(kind: String) -> void:
+	if _own_id == "":
+		return
+	OS.execute("xprop", ["-id", _own_id, "-f", "_NET_WM_WINDOW_TYPE", "32a",
+		"-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_" + kind])
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_ALWAYS_ON_TOP, kind == "DOCK")
+
+
 ## Every ~0.6 s: is any normal, visible window on this workspace overlapping the dock?
+## And while the drawers are open: has a new window appeared? Then bring it to the front, once.
 func _watch_windows() -> void:
 	# a script file, not "sh -c": Godot's execute() would swallow the $variables
 	var script := ProjectSettings.globalize_path("res://scripts/visible_windows.sh")
+	var raiser := ProjectSettings.globalize_path("res://scripts/raise_window.py")
+	var gen := -1
+	var known := {}      # windows that were already there when the drawers opened (or already raised)
 	while not _watch_quit:
 		var out := []
 		OS.execute("sh", [script], out)
@@ -139,13 +157,26 @@ func _watch_windows() -> void:
 		var dock_r := _dock_screen_rect
 		_watch_mutex.unlock()
 		var hit := false
+		var ids := []
 		for line in "".join(out).split("\n", false):
 			var f := line.split(" ", false)
-			if f.size() == 4 and dock_r.size.x > 0.0:
-				if Rect2(f[0].to_float(), f[1].to_float(), f[2].to_float(), f[3].to_float()).intersects(dock_r):
-					hit = true
-					break
+			if f.size() != 5 or f[0] == _own_id:
+				continue
+			ids.append(f[0])
+			if dock_r.size.x > 0.0 and Rect2(f[1].to_float(), f[2].to_float(), f[3].to_float(), f[4].to_float()).intersects(dock_r):
+				hit = true
 		_covered = hit
+		if is_open:
+			if gen != _open_gen:
+				gen = _open_gen
+				known.clear()
+				for id in ids:
+					known[id] = true
+			else:
+				for id in ids:
+					if not known.has(id):
+						known[id] = true
+						OS.create_process("python3", [raiser, id])
 		for i in 6:
 			if _watch_quit:
 				return
@@ -243,6 +274,8 @@ func open_drawers(path := "", what := "drawers") -> void:
 	blur.visible = img != null
 	_tween_blur(1.0, 0.45)
 	DisplayServer.window_set_mouse_passthrough(PackedVector2Array())   # the whole screen is ours now
+	_open_gen += 1
+	_set_window_type("NORMAL")
 	_last_pass = PackedVector2Array()
 	_set_drawers_live(true)
 	dock.forced_running["Apps" if what == "apps" else "Drawers"] = true
@@ -255,6 +288,7 @@ func open_drawers(path := "", what := "drawers") -> void:
 
 func _on_drawers_closed() -> void:
 	is_open = false
+	_set_window_type("DOCK")
 	dock.forced_running.erase("Drawers")
 	dock.forced_running.erase("Apps")
 	if _queued != "":
