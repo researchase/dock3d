@@ -1,0 +1,12 @@
+Dock3D
+Copyright 2026 Ashwin Venkat (github.com/researchase)
+
+A 3D dock, file drawers and app roller for Linux, made with the Godot Engine.
+Developed with the help of Claude (Anthropic).
+
+If you use, share or build on this project, please keep this NOTICE file and credit
+"Dock3D by Ashwin Venkat" with a link to https://github.com/researchase/dock3d.
+
+Third-party:
+- Godot Engine (MIT License), https://godotengine.org
+- App and file icons are read at runtime from the system icon theme (e.g. Yaru); none are bundled.
